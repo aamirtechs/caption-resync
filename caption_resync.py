@@ -26,6 +26,9 @@ from typing import List, Optional, Tuple
 __version__ = "1.0.0"
 
 # A timestamp: [hh:]mm:ss,mmm or [hh:]mm:ss.mmm (1 to 3 millisecond digits).
+#: MicroDVD (.sub) frame rate assumed when the file does not say otherwise.
+DEFAULT_FPS = 23.976
+
 TS_RE = re.compile(
     r"(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})"
 )
@@ -252,19 +255,59 @@ def parse_vtt(text: str, name: str = "<input>") -> SubtitleFile:
     return doc
 
 
-def parse_text(text: str, name: str = "<input>") -> SubtitleFile:
-    """Auto-detect SRT vs WebVTT and parse."""
+MICRODVD_LINE_RE = re.compile(r"^\{(\d+)\}\{(\d+)\}(.*)$")
+
+
+def frame_to_ms(frame: int, fps: float = DEFAULT_FPS) -> int:
+    """Convert a MicroDVD frame number to milliseconds."""
+    return int(round(frame / fps * 1000))
+
+
+def parse_sub(text: str, fps: float = DEFAULT_FPS,
+              name: str = "<input>") -> SubtitleFile:
+    """Parse MicroDVD (.sub) text: ``{start_frame}{end_frame}text``.
+
+    ``|`` inside the text is MicroDVD's line break. Frames become milliseconds
+    at ``fps`` so the rest of the pipeline (``--shift``, ``--stretch``, SRT/VTT
+    output) works unchanged.
+    """
+    doc = SubtitleFile(fmt="sub")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for line_no, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        parsed = MICRODVD_LINE_RE.match(line.strip())
+        if parsed is None:
+            doc.issues.append(ParseIssue(
+                line_no, "error",
+                "line is not a MicroDVD cue: %r" % line.strip(),
+            ))
+            continue
+        start_frame, end_frame, body = parsed.groups()
+        doc.cues.append(Cue(
+            start=frame_to_ms(int(start_frame), fps),
+            end=frame_to_ms(int(end_frame), fps),
+            text=body.strip().replace("|", "\n"),
+        ))
+    return doc
+
+
+def parse_text(text: str, name: str = "<input>",
+               fps: float = DEFAULT_FPS) -> SubtitleFile:
+    """Auto-detect SRT, WebVTT or MicroDVD and parse."""
     first = next((l for l in text.splitlines() if l.strip()), "")
     if first.startswith("WEBVTT"):
         return parse_vtt(text, name)
+    if name.lower().endswith(".sub") or MICRODVD_LINE_RE.match(first.strip()):
+        return parse_sub(text, fps, name)
     return parse_srt(text, name)
 
 
-def read_file(path: str) -> SubtitleFile:
+def read_file(path: str, fps: float = DEFAULT_FPS) -> SubtitleFile:
     """Read a subtitle file (BOM-tolerant UTF-8) and parse it."""
     with open(path, "r", encoding="utf-8-sig", newline="") as fh:
         text = fh.read()
-    return parse_text(text, path)
+    return parse_text(text, path, fps)
 
 
 # --------------------------------------------------------------------------
@@ -449,7 +492,7 @@ def describe_ops(args: argparse.Namespace) -> List[str]:
 
 def process_file(path: str, args: argparse.Namespace, out_fmt: str) -> Tuple[bool, int]:
     """Process one file. Returns (ok, clamped_count)."""
-    doc = read_file(path)
+    doc = read_file(path, args.fps)
     parse_errors = [i for i in doc.issues if i.severity == "error"]
     if parse_errors and not args.force:
         print("%s: skipped, %d parse error(s) (use --check for detail, "
@@ -494,8 +537,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("files", nargs="*", help="subtitle files to process")
     p.add_argument("--dir", help="process every matching file in a directory")
-    p.add_argument("--glob", default="*.srt,*.vtt",
-                   help="comma-separated patterns for --dir (default: *.srt,*.vtt)")
+    p.add_argument("--glob", default="*.srt,*.vtt,*.sub",
+                   help="comma-separated patterns for --dir (default: *.srt,*.vtt,*.sub)")
+    p.add_argument("--fps", type=float, default=DEFAULT_FPS,
+                   help="frame rate for MicroDVD (.sub) input (default: 23.976)")
     p.add_argument("--shift",
                    help="shift all cues: ms (2500), seconds (2.5s), "
                         "or hh:mm:ss,mmm; negative moves earlier")
@@ -524,6 +569,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.fps <= 0:
+        print("error: --fps must be a positive frame rate")
+        return 2
+
     if args.shift is not None:
         try:
             args.shift_ms = parse_offset(args.shift)
@@ -542,7 +591,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         total_cues = 0
         for path in paths:
             try:
-                doc = read_file(path)
+                doc = read_file(path, args.fps)
             except OSError as exc:
                 problems.append(CheckIssue("error", "%s: cannot read: %s" % (path, exc)))
                 continue

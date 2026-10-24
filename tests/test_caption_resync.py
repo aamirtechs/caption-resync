@@ -21,6 +21,8 @@ from caption_resync import (
     op_stretch,
     op_strip_styles,
     parse_offset,
+    frame_to_ms,
+    parse_sub,
     parse_text,
     parse_timestamp,
     render,
@@ -179,6 +181,31 @@ class TestVttParsing(unittest.TestCase):
     def test_header_with_title(self):
         doc = parse_ok("WEBVTT - my video\n\n00:00:01.000 --> 00:00:02.000\nHi\n")
         self.assertEqual(len(doc.cues), 1)
+
+
+class TestMicroDvd(unittest.TestCase):
+    def test_frame_to_ms_math(self):
+        self.assertEqual(frame_to_ms(48), 2002)
+        self.assertEqual(frame_to_ms(24, 24.0), 1000)
+        self.assertEqual(frame_to_ms(0), 0)
+
+    def test_default_fps_is_23976(self):
+        doc = parse_sub("{0}{48}one")
+        self.assertEqual(doc.fmt, "sub")
+        self.assertEqual(doc.cues[0].end, 2002)
+
+    def test_custom_fps(self):
+        doc = parse_sub("{0}{24}one", fps=24.0)
+        self.assertEqual(doc.cues[0].end, 1000)
+
+    def test_multiline_text_uses_pipes(self):
+        doc = parse_sub("{0}{48}first line|second line")
+        self.assertEqual(doc.cues[0].text, "first line\nsecond line")
+
+    def test_bad_line_is_reported(self):
+        doc = parse_sub("{0}{48}ok\nnot a cue\n")
+        self.assertEqual(len(doc.cues), 1)
+        self.assertTrue(any("not a MicroDVD cue" in str(issue) for issue in doc.issues))
 
 
 class TestOperations(unittest.TestCase):
@@ -348,6 +375,33 @@ class TestCli(unittest.TestCase):
         proc = self.run_cli("--check", src)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("overlap", proc.stdout)
+
+    def test_microdvd_input_converts_to_srt(self):
+        src = self.write("movie.sub", "{0}{48}one\n{48}{96}two\n")
+        proc = self.run_cli("--to", "srt", "--quiet", src)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        dest = os.path.join(self.tmp, "movie.resync.srt")
+        self.assertTrue(os.path.exists(dest), sorted(os.listdir(self.tmp)))
+        with open(dest, encoding="utf-8") as fh:
+            doc = parse_ok(fh.read())
+        self.assertEqual(len(doc.cues), 2)
+        self.assertEqual(doc.cues[0].end, 2002)
+
+    def test_microdvd_custom_fps(self):
+        src = self.write("film.sub", "{0}{24}one\n")
+        proc = self.run_cli("--fps", "24", "--to", "srt", "--quiet", src)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(os.path.join(self.tmp, "film.resync.srt"), encoding="utf-8") as fh:
+            doc = parse_ok(fh.read())
+        self.assertEqual(doc.cues[0].end, 1000)
+
+    def test_dir_glob_picks_up_sub_files(self):
+        self.write("a.srt", SRT_SAMPLE)
+        self.write("b.sub", "{0}{48}one\n")
+        proc = self.run_cli("--to", "srt", "--dir", ".", "-q")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "b.resync.srt")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "a.resync.srt")))
 
     def test_no_op_is_error(self):
         src = self.write("a.srt", SRT_SAMPLE)
