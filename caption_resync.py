@@ -342,6 +342,24 @@ def strip_styles(text: str) -> str:
     return "\n".join(line.strip() for line in text.split("\n")).strip()
 
 
+def op_fix_overlaps(doc: SubtitleFile) -> int:
+    """Trim each cue's end to the next cue's start; returns how many changed.
+
+    Only the end moves: shortening a cue never shifts its start, so a fix
+    cannot pull a cue away from the audio it was timed to. The trim is clamped
+    at ``start + 1`` ms so a pathological pair (the next cue starting before
+    this one) still leaves a positive-duration cue instead of trading one
+    --check error for another.
+    """
+    trimmed = 0
+    for current, following in zip(doc.cues, doc.cues[1:]):
+        if current.end <= following.start:
+            continue
+        current.end = max(following.start, current.start + 1)
+        trimmed += 1
+    return trimmed
+
+
 def op_strip_styles(doc: SubtitleFile) -> None:
     for cue in doc.cues:
         cue.text = strip_styles(cue.text)
@@ -442,6 +460,8 @@ def describe_ops(args: argparse.Namespace) -> List[str]:
         ops.append("convert to %s" % args.to.upper())
     if args.strip_styles:
         ops.append("strip styles")
+    if args.fix_overlaps:
+        ops.append("fix overlaps")
     if args.renumber:
         ops.append("renumber")
     return ops
@@ -461,6 +481,8 @@ def process_file(path: str, args: argparse.Namespace, out_fmt: str) -> Tuple[boo
         clamped = op_shift(doc, args.shift_ms)
     if args.stretch is not None:
         op_stretch(doc, args.stretch)
+    if args.fix_overlaps:
+        op_fix_overlaps(doc)
     if args.strip_styles:
         op_strip_styles(doc)
     if args.renumber:
@@ -505,6 +527,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="convert output format")
     p.add_argument("--strip-styles", action="store_true",
                    help="remove <i>/<b>/<font> tags, {..} tags, cue position settings")
+    p.add_argument("--fix-overlaps", action="store_true",
+                   help="trim each cue's end to the next cue's start (applied after shift/stretch)")
     p.add_argument("--renumber", action="store_true",
                    help="renumber cue identifiers sequentially from 1")
     p.add_argument("--suffix", default=".resync",
@@ -561,7 +585,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not describe_ops(args):
         print("error: nothing to do (add --shift, --stretch, --to, "
-              "--strip-styles, --renumber, or use --check)")
+              "--strip-styles, --fix-overlaps, --renumber, or use --check)")
         return 2
 
     out_fmt = args.to or None

@@ -16,6 +16,7 @@ from caption_resync import (
     format_srt_ts,
     format_vtt_ts,
     main,
+    op_fix_overlaps,
     op_renumber,
     op_shift,
     op_stretch,
@@ -228,6 +229,42 @@ class TestOperations(unittest.TestCase):
         self.assertEqual([c.cue_id for c in doc.cues], ["1", "2"])
 
 
+class TestFixOverlaps(unittest.TestCase):
+    def _doc(self, body):
+        return parse_ok("WEBVTT\n\n" + body)
+
+    def test_trims_overlapping_end_time(self):
+        doc = self._doc(
+            "00:00:00.000 --> 00:00:05.000\none\n\n"
+            "00:00:03.000 --> 00:00:08.000\ntwo\n"
+        )
+        self.assertEqual(op_fix_overlaps(doc), 1)
+        self.assertEqual(doc.cues[0].end, 3000)
+        self.assertEqual(
+            [issue for issue in check_doc(doc, "x.vtt") if "overlap" in str(issue)],
+            [],
+        )
+
+    def test_leaves_non_overlapping_cues_alone(self):
+        doc = self._doc(
+            "00:00:00.000 --> 00:00:02.000\none\n\n"
+            "00:00:02.000 --> 00:00:04.000\ntwo\n"
+        )
+        ends = [cue.end for cue in doc.cues]
+        self.assertEqual(op_fix_overlaps(doc), 0)
+        self.assertEqual([cue.end for cue in doc.cues], ends)
+
+    def test_clamps_the_trim_at_start_plus_one_millisecond(self):
+        doc = self._doc(
+            "00:00:05.000 --> 00:00:09.000\none\n\n"
+            "00:00:04.000 --> 00:00:06.000\ntwo\n"
+        )
+        op_fix_overlaps(doc)
+        self.assertEqual(doc.cues[0].end, 5001)
+        self.assertEqual(doc.cues[0].start, 5000, "starts must never move")
+        self.assertGreater(doc.cues[0].end, doc.cues[0].start)
+
+
 class TestRendering(unittest.TestCase):
     def test_render_srt_shape(self):
         doc = parse_ok(SRT_SAMPLE)
@@ -348,6 +385,17 @@ class TestCli(unittest.TestCase):
         proc = self.run_cli("--check", src)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("overlap", proc.stdout)
+
+    def test_fix_overlaps_makes_check_pass(self):
+        src = self.write("overlap.srt",
+                         "1\n00:00:00,000 --> 00:00:05,000\none\n\n"
+                         "2\n00:00:03,000 --> 00:00:08,000\ntwo\n")
+        fix = self.run_cli("--fix-overlaps", "--quiet", src)
+        self.assertEqual(fix.returncode, 0, fix.stderr)
+        dest = os.path.join(self.tmp, "overlap.resync.srt")
+        check = self.run_cli("--check", dest)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn("0 error(s)", check.stdout)
 
     def test_no_op_is_error(self):
         src = self.write("a.srt", SRT_SAMPLE)
