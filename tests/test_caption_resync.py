@@ -170,6 +170,47 @@ class TestVttParsing(unittest.TestCase):
                        "00:00:01.000 --> 00:00:02.000\nHi\n")
         self.assertEqual(len(doc.cues), 1)
 
+    def test_note_blocks_are_stored_with_their_position(self):
+        doc = parse_ok(
+            "WEBVTT\n\nNOTE first note\n\n"
+            "00:00:01.000 --> 00:00:02.000\nhi\n\n"
+            "NOTE between cues\n\n"
+            "00:00:03.000 --> 00:00:04.000\nbye\n\n"
+            "NOTE trailing\n"
+        )
+        self.assertEqual(
+            doc.notes,
+            [(0, "NOTE first note"), (1, "NOTE between cues"), (2, "NOTE trailing")],
+        )
+        self.assertEqual(len(doc.cues), 2)
+
+    def test_note_blocks_round_trip_in_place(self):
+        source = (
+            "WEBVTT\n\nNOTE first note\n\n"
+            "00:00:01.000 --> 00:00:02.000\nhi\n\n"
+            "NOTE between cues\n\n"
+            "00:00:03.000 --> 00:00:04.000\nbye\n\n"
+            "NOTE trailing\n"
+        )
+        self.assertEqual(render_vtt(parse_ok(source)), source)
+
+    def test_notes_are_dropped_on_vtt_to_srt(self):
+        doc = parse_ok(
+            "WEBVTT\n\nNOTE keep me out of srt\n\n"
+            "00:00:01.000 --> 00:00:02.000\nhi\n"
+        )
+        self.assertEqual(len(doc.notes), 1)
+        self.assertNotIn("NOTE", render_srt(doc))
+
+    def test_strip_styles_leaves_notes_alone(self):
+        doc = parse_ok(
+            "WEBVTT\n\nNOTE keep me\n\n"
+            "00:00:01.000 --> 00:00:02.000 align:start\n<i>hi</i>\n"
+        )
+        op_strip_styles(doc)
+        self.assertEqual(doc.notes, [(0, "NOTE keep me")])
+        self.assertIn("NOTE keep me", render_vtt(doc))
+
     def test_style_block_preserved(self):
         doc = parse_ok("WEBVTT\n\nSTYLE\n::cue { color: lime }\n\n"
                        "00:00:01.000 --> 00:00:02.000\nHi\n")

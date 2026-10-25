@@ -61,6 +61,10 @@ class SubtitleFile:
     cues: List[Cue] = field(default_factory=list)
     fmt: str = "srt"  # "srt" or "vtt"
     header_blocks: List[str] = field(default_factory=list)  # VTT STYLE/REGION
+    # VTT NOTE comments as (cue_index, text): the note sits before the cue at
+    # that index, so an index equal to ``len(cues)`` means "after the last cue".
+    # Only WebVTT output can carry them; SRT has no comment syntax.
+    notes: List[Tuple[int, str]] = field(default_factory=list)
     issues: List[ParseIssue] = field(default_factory=list)
 
 
@@ -222,7 +226,10 @@ def parse_vtt(text: str, name: str = "<input>") -> SubtitleFile:
     for start_line, block in _split_blocks(lines[header_end + 1:]):
         head = block[0].strip()
         if head == "NOTE" or head.startswith("NOTE "):
-            continue  # comments carry no timing; drop them
+            # Comments carry no timing, but losing them loses author metadata
+            # on a WebVTT -> WebVTT pass; keep them for the renderer to place.
+            doc.notes.append((len(doc.cues), "\n".join(line.rstrip() for line in block)))
+            continue
         if head == "STYLE" or head == "REGION":
             doc.header_blocks.append("\n".join(block).strip())
             continue
@@ -286,7 +293,13 @@ def render_vtt(doc: SubtitleFile) -> str:
     for block in doc.header_blocks:
         out.append(block)
         out.append("")
-    for cue in doc.cues:
+    notes_by_index: Dict[int, List[str]] = {}
+    for index, note in doc.notes:
+        notes_by_index.setdefault(index, []).append(note)
+    for index, cue in enumerate(doc.cues):
+        for note in notes_by_index.get(index, []):
+            out.append(note)
+            out.append("")
         if cue.cue_id is not None:
             out.append(cue.cue_id)
         ts = "%s --> %s" % (format_vtt_ts(cue.start), format_vtt_ts(cue.end))
@@ -294,6 +307,10 @@ def render_vtt(doc: SubtitleFile) -> str:
             ts += " " + cue.settings
         out.append(ts)
         out.append(cue.text)
+        out.append("")
+    # Notes that sat after the last cue keep their place after it.
+    for note in notes_by_index.get(len(doc.cues), []):
+        out.append(note)
         out.append("")
     return "\n".join(out).rstrip("\n") + "\n" if len(out) > 2 else "WEBVTT\n"
 
