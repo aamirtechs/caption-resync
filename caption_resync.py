@@ -419,6 +419,65 @@ def check_doc(doc: SubtitleFile, path: str) -> List[CheckIssue]:
 # CLI
 # --------------------------------------------------------------------------
 
+#: Above this reading speed a cue is hard to follow for most viewers.
+READABLE_WPM = 200
+
+
+def _count_words(text: str) -> int:
+    """Words in a cue body, ignoring styling tags."""
+    return len(strip_styles(text).split())
+
+
+def stats_for_doc(doc: SubtitleFile) -> Dict[str, float]:
+    """Readability numbers for one document.
+
+    ``wpm`` is the mean of the per-cue values; a zero-duration cue has no
+    meaningful speed and is skipped (the same skip ``check_doc`` applies to its
+    overlap check).
+    """
+    wpm_values: List[float] = []
+    total_words = 0
+    over = 0
+    for cue in doc.cues:
+        words = _count_words(cue.text)
+        total_words += words
+        duration_ms = cue.end - cue.start
+        if duration_ms <= 0:
+            continue
+        wpm = words / (duration_ms / 60000.0)
+        wpm_values.append(wpm)
+        if wpm > READABLE_WPM:
+            over += 1
+    return {
+        "cues": len(doc.cues),
+        "words": total_words,
+        "wpm": (sum(wpm_values) / len(wpm_values)) if wpm_values else 0.0,
+        "over": over,
+    }
+
+
+def print_stats(rows: List[Tuple[str, Dict[str, float]]]) -> None:
+    """Print the ``--stats`` table, one row per file plus a totals row."""
+    width = max([len(path) for path, _ in rows] + [len("TOTAL")])
+    print("%-*s  %5s  %6s  %8s  %s" % (width, "FILE", "CUES", "WORDS", "AVG WPM", ">%d WPM" % READABLE_WPM))
+    total_cues = 0
+    total_words = 0
+    total_over = 0
+    wpm_values: List[float] = []
+    for path, stats in rows:
+        total_cues += int(stats["cues"])
+        total_words += int(stats["words"])
+        total_over += int(stats["over"])
+        if stats["wpm"]:
+            wpm_values.append(float(stats["wpm"]))
+        print("%-*s  %5d  %6d  %8.1f  %d" % (
+            width, path, stats["cues"], stats["words"], stats["wpm"], stats["over"]))
+    if len(rows) > 1:
+        avg = (sum(wpm_values) / len(wpm_values)) if wpm_values else 0.0
+        print("%-*s  %5d  %6d  %8.1f  %d" % (
+            width, "TOTAL", total_cues, total_words, avg, total_over))
+
+
 def collect_inputs(args: argparse.Namespace) -> List[str]:
     paths: List[str] = list(args.files or [])
     if args.dir:
@@ -529,6 +588,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", help="write outputs here instead of next to inputs")
     p.add_argument("--dry-run", action="store_true",
                    help="show what would change without writing files")
+    p.add_argument("--stats", action="store_true",
+                   help="print cue/word counts and reading speed per file, write nothing")
     p.add_argument("--check", action="store_true",
                    help="validate files and report timing problems (exit 1 on errors)")
     p.add_argument("--force", action="store_true",
@@ -552,6 +613,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not paths:
         print("error: no input files (pass files or use --dir)")
         return 2
+
+    # --stats mode: report only, never writes.
+    if args.stats:
+        rows: List[Tuple[str, Dict[str, float]]] = []
+        for path in paths:
+            try:
+                doc = read_file(path)
+            except (OSError, UnicodeDecodeError) as exc:
+                print("%s: cannot read: %s" % (path, exc))
+                continue
+            rows.append((path, stats_for_doc(doc)))
+        print_stats(rows)
+        return 0
 
     # --check mode: validate only.
     if args.check:

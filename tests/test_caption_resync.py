@@ -22,6 +22,7 @@ from caption_resync import (
     op_strip_styles,
     parse_offset,
     parse_text,
+    stats_for_doc,
     parse_timestamp,
     render,
     render_srt,
@@ -222,6 +223,39 @@ class TestVttParsing(unittest.TestCase):
         self.assertEqual(len(doc.cues), 1)
 
 
+class TestStats(unittest.TestCase):
+    def test_counts_words_and_average_wpm(self):
+        doc = parse_ok(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:06.000\n"
+            + " ".join(["word"] * 10) + "\n\n"
+            "00:00:06.000 --> 00:00:09.000\ntwo words\n"
+        )
+        stats = stats_for_doc(doc)
+        self.assertEqual(stats["cues"], 2)
+        self.assertEqual(stats["words"], 12)
+        # 100 WPM and 40 WPM -> mean 70
+        self.assertAlmostEqual(stats["wpm"], 70.0)
+        self.assertEqual(stats["over"], 0)
+
+    def test_flags_cues_above_the_readable_speed(self):
+        doc = parse_ok(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n"
+            + " ".join(["word"] * 10) + "\n"
+        )
+        stats = stats_for_doc(doc)
+        self.assertEqual(stats["over"], 1, "10 words in 1s is 600 WPM")
+
+    def test_zero_duration_cue_is_skipped_for_speed(self):
+        doc = parse_ok(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:01.000\nthree words here\n"
+        )
+        stats = stats_for_doc(doc)
+        self.assertEqual(stats["cues"], 1)
+        self.assertEqual(stats["words"], 3)
+        self.assertEqual(stats["wpm"], 0.0)
+
+
 class TestOperations(unittest.TestCase):
     def test_shift_positive(self):
         doc = parse_ok(SRT_SAMPLE)
@@ -389,6 +423,31 @@ class TestCli(unittest.TestCase):
         proc = self.run_cli("--check", src)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("overlap", proc.stdout)
+
+    def test_stats_prints_a_report_and_writes_nothing(self):
+        src = self.write("a.srt", SRT_SAMPLE)
+        proc = self.run_cli("--stats", src)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("CUES", proc.stdout)
+        self.assertIn("AVG WPM", proc.stdout)
+        self.assertIn("a.srt", proc.stdout)
+        self.assertEqual(
+            sorted(os.listdir(self.tmp)),
+            ["a.srt"],
+            "--stats must not write output files",
+        )
+
+    def test_stats_dir_mode_prints_one_row_per_file_and_a_total(self):
+        self.write("a.srt", SRT_SAMPLE)
+        self.write("b.vtt", VTT_SAMPLE)
+        proc = self.run_cli("--stats", "--dir", ".")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = [line for line in proc.stdout.splitlines() if line.strip()]
+        self.assertTrue(any("a.srt" in line for line in rows), rows)
+        self.assertTrue(any("b.vtt" in line for line in rows), rows)
+        self.assertTrue(any(line.startswith("TOTAL") for line in rows), rows)
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["a.srt", "b.vtt"])
+
 
     def test_no_op_is_error(self):
         src = self.write("a.srt", SRT_SAMPLE)
