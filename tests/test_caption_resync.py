@@ -385,6 +385,27 @@ class TestCli(unittest.TestCase):
         self.assertEqual(doc.cues[0].start, 0)
         self.assertEqual(doc.cues[1].start, 3000)
 
+    def test_stretch_zero_is_rejected(self):
+        src = self.write("a.srt", SRT_SAMPLE)
+        proc = self.run_cli("--stretch", "0", src)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--stretch must be a positive factor", proc.stdout)
+
+    def test_stretch_negative_is_rejected(self):
+        src = self.write("a.srt", SRT_SAMPLE)
+        proc = self.run_cli("--stretch", "-1.5", src)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--stretch must be a positive factor", proc.stdout)
+
+    def test_stretch_positive_still_works(self):
+        src = self.write("a.srt", SRT_SAMPLE)
+        proc = self.run_cli("--stretch", "2.0", "--quiet", src)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        dest = os.path.join(self.tmp, "a.resync.srt")
+        doc = parse_ok(open(dest, encoding="utf-8").read())
+        self.assertEqual(doc.cues[0].start, 2000)
+        self.assertEqual(doc.cues[0].end, 8000)
+
     def test_convert_to_vtt(self):
         src = self.write("a.srt", SRT_SAMPLE)
         proc = self.run_cli("--to", "vtt", "--quiet", src)

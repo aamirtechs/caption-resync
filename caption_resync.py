@@ -602,6 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.stretch is not None and args.stretch <= 0:
+        print("error: --stretch must be a positive factor")
+        return 2
+
     if args.shift is not None:
         try:
             args.shift_ms = parse_offset(args.shift)
