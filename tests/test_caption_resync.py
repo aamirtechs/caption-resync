@@ -272,6 +272,15 @@ class TestOperations(unittest.TestCase):
         # Later cues keep their relative position, moved by the same offset.
         self.assertEqual(doc.cues[1].start, 3000)
 
+
+    def test_shift_far_negative_keeps_duration(self):
+        doc = parse_ok(SRT_SAMPLE)
+        op_shift(doc, -5000)
+        # 整条被推到零之前：起点截到 0，但时长保留（不能变成 0 ms）
+        self.assertEqual(doc.cues[0].start, 0)
+        self.assertEqual(doc.cues[0].end, doc.cues[0].start + 3000)
+        self.assertGreater(doc.cues[0].end, doc.cues[0].start)
+
     def test_stretch(self):
         doc = parse_ok(SRT_SAMPLE)
         op_stretch(doc, 2.0)

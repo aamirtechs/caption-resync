@@ -326,14 +326,21 @@ def render(doc: SubtitleFile, fmt: str) -> str:
 # --------------------------------------------------------------------------
 
 def op_shift(doc: SubtitleFile, offset_ms: int) -> int:
-    """Shift every cue by offset_ms. Times clamp at zero; returns clamp count."""
+    """Shift every cue by offset_ms. Times clamp at zero; returns clamp count.
+
+    A cue whose whole span is pushed before zero keeps its original duration
+    instead of collapsing to a 0 ms entry, which is not a valid subtitle cue.
+    """
     clamped = 0
     for cue in doc.cues:
-        start, end = cue.start + offset_ms, cue.end + offset_ms
-        if start < 0 or end < 0:
+        duration = cue.end - cue.start
+        start_ms, end_ms = cue.start + offset_ms, cue.end + offset_ms
+        if start_ms < 0 or end_ms < 0:
             clamped += 1
-        cue.start = max(0, start)
-        cue.end = max(0, end)
+        cue.start = max(0, start_ms)
+        cue.end = max(0, end_ms)
+        if cue.end <= cue.start:
+            cue.end = cue.start + max(1, duration)
     return clamped
 
 
